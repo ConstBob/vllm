@@ -200,7 +200,9 @@ class EngineCore:
                 scheduler_stats=self.scheduler.make_stats(),
             )
         scheduler_output = self.scheduler.schedule()
+        logger.info("Scheduler output: %s", scheduler_output)
         output = self.model_executor.execute_model(scheduler_output)
+        logger.info("Model runner output: %s", output)
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, output)  # type: ignore
 

@@ -36,9 +36,10 @@ class KVConnectorFactory:
     @classmethod
     def create_connector_v0(cls, rank: int, local_rank: int,
                             config: "VllmConfig") -> KVConnectorBase:
-        if envs.VLLM_USE_V1:
-            raise ValueError("Attempting to initialize a V0 Connector, "
-                             f"but found {envs.VLLM_USE_V1=}")
+        # Allow V0 connector with V1 mode for distserve compatibility
+        # if envs.VLLM_USE_V1:
+        #     raise ValueError("Attempting to initialize a V0 Connector, "
+        #                      f"but found {envs.VLLM_USE_V1=}")
 
         connector_name = config.kv_transfer_config.kv_connector
         if connector_name not in cls._registry:

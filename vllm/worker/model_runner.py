@@ -1685,6 +1685,10 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         if num_steps > 1:
             raise ValueError("num_steps > 1 is not supported in ModelRunner")
 
+        print("[DEBUG] Starting execute_model")
+        print(f"[DEBUG] model_input.attn_metadata: {model_input.attn_metadata}")
+        print(f"[DEBUG] kv_caches[0].shape: {kv_caches[0].shape if kv_caches else None}")
+
         if self.lora_config:
             assert model_input.lora_requests is not None
             assert model_input.lora_mapping is not None
@@ -1734,15 +1738,17 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         # NOTE: The receive operation is blocking
         bypass_model_exec = False
         if self.need_recv_kv(model_input, kv_caches):
-            hidden_or_intermediate_states, bypass_model_exec, model_input = \
-                get_kv_transfer_group().recv_kv_caches_and_hidden_states(
-                    # model is used to know which layer the current worker
-                    # is working on, so that we can receive KV for only those
-                    # layers.
+            print("[DEBUG] Attempting to receive KV caches")
+            try:
+                hidden_or_intermediate_states, bypass_model_exec, model_input = get_kv_transfer_group().recv_kv_caches_and_hidden_states(
                     model_executable,
                     model_input,
                     kv_caches=kv_caches
                 )
+                print("[DEBUG] Successfully received KV caches")
+            except Exception as e:
+                print(f"[DEBUG] Error receiving KV caches: {e}")
+                raise
 
         multi_modal_kwargs = model_input.multi_modal_kwargs or {}
         seqlen_agnostic_kwargs = {
@@ -1868,6 +1874,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         """
 
         if self.vllm_config.kv_transfer_config is None:
+            print("[DEBUG] KV transfer config is None, no need to receive KV")
             return False
 
         prefill_meta = model_input.attn_metadata.prefill_metadata
@@ -1876,6 +1883,13 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         is_profile_run = (kv_caches[0].numel() == 0)
         # check if the current run is prefill
         is_prefill_run = prefill_meta is not None
+
+        print(f"[DEBUG] KV receive conditions:")
+        print(f"[DEBUG] - is_kv_consumer: {self.vllm_config.kv_transfer_config.is_kv_consumer}")
+        print(f"[DEBUG] - is_profile_run: {is_profile_run}")
+        print(f"[DEBUG] - is_prefill_run: {is_prefill_run}")
+        print(f"[DEBUG] - kv_caches[0].numel(): {kv_caches[0].numel()}")
+        print(f"[DEBUG] - prefill_meta: {prefill_meta}")
 
         return self.vllm_config.kv_transfer_config.is_kv_consumer and (
             not is_profile_run) and is_prefill_run
@@ -1893,6 +1907,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         """
 
         if self.vllm_config.kv_transfer_config is None:
+            print("[DEBUG] KV transfer config is None, no need to send KV")
             return False
 
         prefill_meta = model_input.attn_metadata.prefill_metadata
@@ -1901,6 +1916,13 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         is_profile_run = (kv_caches[0].numel() == 0)
         # check if the current run is prefill
         is_prefill_run = prefill_meta is not None
+
+        print(f"[DEBUG] KV send conditions:")
+        print(f"[DEBUG] - is_kv_producer: {self.vllm_config.kv_transfer_config.is_kv_producer}")
+        print(f"[DEBUG] - is_profile_run: {is_profile_run}")
+        print(f"[DEBUG] - is_prefill_run: {is_prefill_run}")
+        print(f"[DEBUG] - kv_caches[0].numel(): {kv_caches[0].numel()}")
+        print(f"[DEBUG] - prefill_meta: {prefill_meta}")
 
         return self.vllm_config.kv_transfer_config.is_kv_producer and (
             not is_profile_run) and is_prefill_run

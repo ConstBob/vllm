@@ -200,21 +200,21 @@ class KVCacheManager:
             raise ValueError("num_tokens must be greater than 0")
 
         new_computed_blocks = new_computed_blocks or []
-
         req_blocks = self.req_to_blocks[request.request_id]
 
+        logger.info(f"Allocating slots for request {request.request_id}")
+        logger.info(f"Current KV cache usage: {self.usage}")
+        logger.info(f"Number of free blocks: {self.block_pool.get_num_free_blocks()}")
+        logger.info(f"Number of computed blocks: {len(new_computed_blocks)}")
+
         # Free the blocks that are skipped during the attention computation
-        # (e.g., tokens outside the sliding window).
-        # We can do this even if we cannot schedule this request due to
-        # insufficient free blocks.
-        # Should call this function before allocating new blocks to reduce
-        # the number of evicted blocks.
         removed_blocks = self.specialized_manager.remove_skipped_blocks(
             req_blocks, request.num_computed_tokens)
         self.block_pool.free_blocks(removed_blocks)
+        if removed_blocks:
+            logger.info(f"Freed {len(removed_blocks)} skipped blocks")
 
-        # The number of computed tokens is the number of computed tokens plus
-        # the new prefix caching hits
+        # Calculate required blocks
         num_computed_tokens = (request.num_computed_tokens +
                                len(new_computed_blocks) * self.block_size)
         num_required_blocks = cdiv(
@@ -223,14 +223,17 @@ class KVCacheManager:
         num_new_blocks = (num_required_blocks - len(req_blocks) -
                           len(new_computed_blocks))
 
-        # If a computed block of a request is an eviction candidate (in the
-        # free queue and ref_cnt == 0), it cannot be counted as a free block
-        # when allocating this request.
+        logger.info(f"Required blocks: {num_required_blocks}")
+        logger.info(f"New blocks needed: {num_new_blocks}")
+
+        # Check if we can allocate
         num_evictable_computed_blocks = sum(1 for blk in new_computed_blocks
                                             if blk.ref_cnt == 0)
         if (num_new_blocks > self.block_pool.get_num_free_blocks() -
                 num_evictable_computed_blocks):
-            # Cannot allocate new blocks
+            logger.warning(f"Cannot allocate {num_new_blocks} blocks for request {request.request_id}")
+            logger.warning(f"Free blocks: {self.block_pool.get_num_free_blocks()}")
+            logger.warning(f"Evictable computed blocks: {num_evictable_computed_blocks}")
             return None
 
         # Touch the computed blocks to make sure they won't be evicted.

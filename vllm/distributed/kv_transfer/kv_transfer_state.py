@@ -54,17 +54,23 @@ def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
 
     global _KV_CONNECTOR_AGENT
 
+    print("[DEBUG] KV transfer initialization:")
+    print(f"[DEBUG] - kv_transfer_config: {vllm_config.kv_transfer_config}")
+    print(f"[DEBUG] - is_kv_transfer_instance: {vllm_config.kv_transfer_config.is_kv_transfer_instance if vllm_config.kv_transfer_config else False}")
+    print(f"[DEBUG] - _KV_CONNECTOR_AGENT: {_KV_CONNECTOR_AGENT}")
+    print(f"[DEBUG] - VLLM_USE_V1: {envs.VLLM_USE_V1}")
+
     if vllm_config.kv_transfer_config is None:
+        print("[DEBUG] KV transfer config is None, skipping initialization")
         return
 
     if (vllm_config.kv_transfer_config.is_kv_transfer_instance
             and _KV_CONNECTOR_AGENT is None):
-        if envs.VLLM_USE_V1:
-            _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector_v1(
-                config=vllm_config, role=KVConnectorRole.WORKER)
-        else:
-            _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector_v0(
-                rank=get_world_group().rank,
-                local_rank=get_world_group().local_rank,
-                config=vllm_config,
-            )
+        print("[DEBUG] Creating KV connector agent")
+        print("[DEBUG] Using V0 connector")
+        _KV_CONNECTOR_AGENT = KVConnectorFactory.create_connector_v0(
+            rank=get_world_group().rank,
+            local_rank=get_world_group().local_rank,
+            config=vllm_config,
+        )
+        print(f"[DEBUG] Created KV connector agent: {_KV_CONNECTOR_AGENT}")

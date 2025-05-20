@@ -44,6 +44,13 @@ class Worker(WorkerBase):
         is_driver_worker: bool = False,
     ):
 
+        print("[DEBUG] GPU Worker initialization:")
+        print(f"[DEBUG] - local_rank: {local_rank}")
+        print(f"[DEBUG] - rank: {rank}")
+        print(f"[DEBUG] - is_driver_worker: {is_driver_worker}")
+        print(f"[DEBUG] - kv_transfer_config: {vllm_config.kv_transfer_config}")
+        print(f"[DEBUG] - is_kv_transfer_instance: {vllm_config.kv_transfer_config.is_kv_transfer_instance if vllm_config.kv_transfer_config else False}")
+
         super().__init__(vllm_config=vllm_config,
                          local_rank=local_rank,
                          rank=rank,
@@ -265,6 +272,7 @@ class Worker(WorkerBase):
         self,
         scheduler_output: "SchedulerOutput",
     ) -> Optional[ModelRunnerOutput]:
+        logger.info(f"[GPUWorker] execute_model called with request IDs: {list(scheduler_output.num_scheduled_tokens.keys())}")
         output = self.model_runner.execute_model(scheduler_output)
         return output if self.is_driver_worker else None
 

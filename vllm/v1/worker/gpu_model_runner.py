@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import os
 import time
 import weakref
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union, List
 
 import numpy as np
 import torch
@@ -67,6 +68,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         vllm_config: VllmConfig,
         device: torch.device,
     ):
+        import os
+        logger.info(f"[GPUModelRunner __init__] PID: {os.getpid()}, device: {device}, torch.cuda.is_available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"[GPUModelRunner __init__] Current CUDA device: {torch.cuda.current_device()}, Name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
         self.vllm_config = vllm_config
         self.model_config = vllm_config.model_config
         self.cache_config = vllm_config.cache_config
@@ -1005,6 +1010,19 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: Optional[IntermediateTensors] = None,
     ) -> Union[ModelRunnerOutput, torch.Tensor]:
+        logger.info("Starting model execution")
+        logger.info(f"Scheduler output received: {scheduler_output}")
+        import os
+        logger.info(f"[GPUModelRunner execute_model] PID: {os.getpid()}, torch.cuda.is_available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            logger.info(f"[GPUModelRunner execute_model] Current CUDA device: {torch.cuda.current_device()}, Name: {torch.cuda.get_device_name(torch.cuda.current_device())}")
+        logger.info("Starting model execution")
+        logger.info(f"Number of requests: {len(scheduler_output.num_scheduled_tokens)}")
+        if scheduler_output.num_scheduled_tokens:
+            logger.info(f"Request IDs: {list(scheduler_output.num_scheduled_tokens.keys())}")
+            for req_id, num_tokens in scheduler_output.num_scheduled_tokens.items():
+                logger.info(f"Request {req_id} has {num_tokens} scheduled tokens")
+
         # Update KVConnector with the KVConnector metadata forward().
         if has_kv_transfer_group():
             get_kv_transfer_group().bind_connector_metadata(
@@ -1013,12 +1031,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self._update_states(scheduler_output)
         if not scheduler_output.total_num_scheduled_tokens:
             # Return empty ModelRunnerOutput if there's no work to do.
+            logger.info("No tokens scheduled, returning empty output")
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         # Prepare the decoder inputs.
+        logger.info("Preparing decoder inputs...")
         attn_metadata, logits_indices, spec_decode_metadata = (
             self._prepare_inputs(scheduler_output))
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+        logger.info(f"Total scheduled tokens: {num_scheduled_tokens}")
+        logger.info(f"Logits indices shape: {logits_indices.shape if hasattr(logits_indices, 'shape') else None}")
+        logger.info(f"Attention metadata: {attn_metadata}")
+
         if (self.use_cuda_graph
                 and num_scheduled_tokens <= self.cudagraph_batch_sizes[-1]):
             # Use piecewise CUDA graphs.
@@ -1037,6 +1061,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             else:
                 num_input_tokens = num_scheduled_tokens
         attn_metadata.num_input_tokens = num_input_tokens
+        logger.info(f"Number of input tokens: {num_input_tokens}")
 
         # _prepare_inputs may reorder the batch, so we must gather multi
         # modal outputs after that to ensure the correct order
@@ -1073,6 +1098,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         else:
             positions = self.positions[:num_input_tokens]
 
+        logger.info(f"Input IDs shape: {input_ids.shape if input_ids is not None else None}")
+        logger.info(f"Input embeddings shape: {inputs_embeds.shape if inputs_embeds is not None else None}")
+        logger.info(f"Positions shape: {positions.shape}")
+
         if get_pp_group().is_first_rank:
             intermediate_tensors = None
         else:
@@ -1088,6 +1117,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Run the decoder.
         # Use persistent buffers for CUDA graphs.
+        logger.info("Running decoder...")
         with set_forward_context(attn_metadata, self.vllm_config):
             output = self.model(
                 input_ids=input_ids,
@@ -1095,6 +1125,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 intermediate_tensors=intermediate_tensors,
                 inputs_embeds=inputs_embeds,
             )
+        logger.info(f"Model output shape: {output.shape if hasattr(output, 'shape') else None}")
 
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = output
@@ -1108,6 +1139,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         hidden_states = hidden_states[:num_scheduled_tokens]
         sample_hidden_states = hidden_states[logits_indices]
         logits = self.model.compute_logits(sample_hidden_states, None)
+        logger.info(f"Logits shape: {logits.shape}")
 
         # Apply structured output bitmasks if present
         if scheduler_output.grammar_bitmask is not None:
@@ -1115,6 +1147,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         # Sample the next token and get logprobs if needed.
         sampling_metadata = self.input_batch.sampling_metadata
+        logger.info(f"Sampling metadata: {sampling_metadata}")
         if spec_decode_metadata is None:
             sampler_output = self.sampler(
                 logits=logits,
@@ -1144,6 +1177,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 sampling_metadata,
             )
             sampler_output.sampled_token_ids = output_token_ids
+
+        logger.info(f"Sampled token IDs shape: {sampler_output.sampled_token_ids.shape if hasattr(sampler_output.sampled_token_ids, 'shape') else None}")
+        logger.info(f"Sampled token IDs: {sampler_output.sampled_token_ids.tolist() if hasattr(sampler_output.sampled_token_ids, 'tolist') else None}")
 
         # TODO(woosuk): The following loop can be slow since it iterates over
         # the requests one by one. Optimize.
@@ -1190,6 +1226,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Mask out the sampled tokens that should not be sampled.
         for i in discard_sampled_tokens_req_indices:
             valid_sampled_token_ids[i].clear()
+
+        logger.info(f"Valid sampled token IDs: {valid_sampled_token_ids}")
 
         if not self.use_spec_decode:
             # Speculative decoding is not enabled.
@@ -1278,7 +1316,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         if has_kv_transfer_group():
             get_kv_transfer_group().clear_connector_metadata()
 
-        return ModelRunnerOutput(
+        logger.info("Model execution completed")
+        output = ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,
             req_id_to_index=self.input_batch.req_id_to_index,
             sampled_token_ids=valid_sampled_token_ids,
@@ -1286,6 +1325,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             logprobs=logprobs_lists,
             prompt_logprobs_dict=prompt_logprobs_dict,
         )
+        logger.info(f"Model runner output produced: {output}")
+        return output
 
     def generate_draft_token_ids(
         self,
